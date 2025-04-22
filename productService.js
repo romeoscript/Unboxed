@@ -8,18 +8,262 @@ const OpenAI = require('openai');
  * @returns {Promise<string>} - The HTML content
  */
 async function fetchProductPage(url) {
-  try {
-    // Use a user agent to avoid being blocked by some websites
-    const response = await axios.get(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-      }
-    });
-    return response.data;
-  } catch (error) {
-    console.error(`Error fetching URL ${url}:`, error.message);
-    throw new Error(`Failed to fetch product page: ${error.message}`);
-  }
+    try {
+        // Use a user agent to avoid being blocked by some websites
+        const response = await axios.get(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+        });
+        return response.data;
+    } catch (error) {
+        console.error(`Error fetching URL ${url}:`, error.message);
+        throw new Error(`Failed to fetch product page: ${error.message}`);
+    }
+}
+
+/**
+ * Cleans the HTML by removing scripts, styles, and unnecessary content
+ * @param {string} html - Raw HTML content
+ * @returns {string} - Simplified HTML
+ */
+function cleanHtml(html) {
+    return html
+        .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+        .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+        .replace(/<svg\b[^<]*(?:(?!<\/svg>)<[^<]*)*<\/svg>/gi, '')
+        .replace(/<!--[\s\S]*?-->/g, '')
+        .replace(/\s{2,}/g, ' ');
+}
+
+/**
+ * Extract product information from HTML to prepare for AI processing
+ * @param {string} html - Cleaned HTML content
+ * @param {string} url - Product URL
+ * @returns {string} - Processed content with labeled product info
+ */
+function extractProductInfo(html, url) {
+    const productInfo = [];
+
+    // Extract product title
+    const titleMatch = html.match(/<h1[^>]*>(.*?)<\/h1>/i) ||
+        html.match(/<title[^>]*>(.*?)<\/title>/i) ||
+        html.match(/<div[^>]*product-title[^>]*>(.*?)<\/div>/i);
+
+    if (titleMatch) {
+        productInfo.push(`PRODUCT TITLE: ${titleMatch[1].trim()}`);
+    }
+
+    // Extract price
+    const priceMatch = html.match(/class=["|']price["|'][^>]*>(.*?)<\/span>/i) ||
+        html.match(/class=["|']product-price["|'][^>]*>(.*?)<\/div>/i) ||
+        html.match(/\$(\d+\.?\d*)/i);
+
+    if (priceMatch) {
+        productInfo.push(`PRODUCT PRICE: ${priceMatch[1] || priceMatch[0]}`);
+    }
+
+    // Extract available size options
+    const availableSizes = extractSizeOptions(html, false);
+    if (availableSizes.length > 0) {
+        productInfo.push(`AVAILABLE SIZE OPTIONS: ${availableSizes.join(', ')}`);
+    }
+
+    // Extract available color options with enhanced detection
+    const availableColors = extractColorOptions(html);
+    if (availableColors.length > 0) {
+        productInfo.push(`AVAILABLE COLOR OPTIONS: ${availableColors.join(', ')}`);
+    }
+
+    // Extract product description
+    const descMatch = html.match(/<div[^>]*(?:product-description|description)[^>]*>([\s\S]*?)<\/div>/i) ||
+        html.match(/<meta[^>]*description[^>]*content=["|'](.*?)["|']/i);
+
+    if (descMatch) {
+        const description = descMatch[1].replace(/<[^>]*>/g, ' ').trim();
+        productInfo.push(`PRODUCT DESCRIPTION: ${description.substring(0, 200)}...`);
+    }
+
+    // Extract product category
+    const catMatch = html.match(/<nav[^>]*breadcrumb[^>]*>([\s\S]*?)<\/nav>/i) ||
+        html.match(/<meta[^>]*product:category[^>]*content=["|'](.*?)["|']/i);
+
+    if (catMatch) {
+        const category = catMatch[1].replace(/<[^>]*>/g, ' ').trim();
+        productInfo.push(`PRODUCT CATEGORY: ${category}`);
+    }
+
+    // If we have enough product info, return a structured format
+    if (productInfo.length >= 2) {
+        return `
+PRODUCT URL: ${url}
+${productInfo.join('\n')}
+
+ADDITIONAL HTML SNIPPETS:
+${html.substring(0, 2000)}
+    `;
+    }
+
+    // Otherwise return a portion of the HTML
+    return `
+PRODUCT URL: ${url}
+RAW HTML:
+${html.substring(0, 4000)}
+  `;
+}
+
+/**
+ * Extract size options from HTML
+ * @param {string} html - HTML content
+ * @param {boolean} includeUnavailable - Whether to include unavailable options
+ * @returns {Array} - Array of size options
+ */
+function extractSizeOptions(html, includeUnavailable = false) {
+    const sizeContainers = [
+        (html.match(/<select[^>]*(?:size|variant)[^>]*>([\s\S]*?)<\/select>/i) || [])[1],
+        (html.match(/<div[^>]*(?:size|variant)[^>]*>([\s\S]*?)<\/div>/i) || [])[1],
+        (html.match(/<ul[^>]*(?:size|variant)[^>]*>([\s\S]*?)<\/ul>/i) || [])[1]
+    ].filter(Boolean);
+
+    const sizeOptions = [];
+
+    for (const container of sizeContainers) {
+        if (!container) continue;
+
+        // Get all options
+        const options = [
+            ...(container.match(/<option[^>]*>(.*?)<\/option>/gi) || []),
+            ...(container.match(/<li[^>]*>(.*?)<\/li>/gi) || []),
+            ...(container.match(/<button[^>]*>(.*?)<\/button>/gi) || []),
+            ...(container.match(/<a[^>]*>(.*?)<\/a>/gi) || []),
+            ...(container.match(/<div[^>]*option[^>]*>(.*?)<\/div>/gi) || [])
+        ];
+
+        for (const option of options) {
+            // Skip if disabled and we don't want unavailable options
+            if (!includeUnavailable && option.match(/disabled|sold[\s-]*out|out[\s-]*of[\s-]*stock|unavailable/i)) {
+                continue;
+            }
+
+            // Extract the text content
+            const text = option.replace(/<[^>]*>/g, '').trim();
+
+            // Skip empty or selector placeholders
+            if (!text || text.includes('Select') || text.includes('Choose')) {
+                continue;
+            }
+
+            sizeOptions.push(text);
+
+            // Also check for value attributes that might contain the size
+            const valueMatch = option.match(/value=["|'](.*?)["|']/i);
+            if (valueMatch && valueMatch[1] &&
+                !/^\d+$/.test(valueMatch[1]) &&
+                !valueMatch[1].includes('select') &&
+                valueMatch[1].length < 10) {
+
+                sizeOptions.push(valueMatch[1]);
+            }
+        }
+    }
+
+    // Remove duplicates and clean up
+    return [...new Set(sizeOptions)].filter(size =>
+        size &&
+        size.length < 20 &&
+        !size.includes('select') &&
+        !size.includes('choose')
+    );
+}
+
+/**
+ * Extract color options from HTML with enhanced detection
+ * @param {string} html - HTML content
+ * @returns {Array} - Array of available color options
+ */
+function extractColorOptions(html) {
+    // Find potential color containers
+    const colorContainers = [
+        (html.match(/<select[^>]*(?:color|colour)[^>]*>([\s\S]*?)<\/select>/i) || [])[1],
+        (html.match(/<div[^>]*(?:color|colour)[^>]*>([\s\S]*?)<\/div>/i) || [])[1],
+        (html.match(/<ul[^>]*(?:color|colour)[^>]*>([\s\S]*?)<\/ul>/i) || [])[1],
+        (html.match(/<div[^>]*swatch[^>]*>([\s\S]*?)<\/div>/i) || [])[1]
+    ].filter(Boolean);
+
+    const colorOptions = [];
+
+    // Specific color keywords to help with detection
+    const colorKeywords = [
+        'red', 'blue', 'green', 'yellow', 'orange', 'purple', 'pink', 'brown', 'black',
+        'white', 'gray', 'grey', 'navy', 'teal', 'gold', 'silver', 'beige', 'burgundy',
+        'turquoise', 'lavender', 'cream', 'khaki', 'olive'
+    ];
+
+    // Process each container
+    for (const container of colorContainers) {
+        if (!container) continue;
+
+        // Get all potential color elements
+        const options = [
+            ...(container.match(/<option[^>]*>(.*?)<\/option>/gi) || []),
+            ...(container.match(/<li[^>]*>(.*?)<\/li>/gi) || []),
+            ...(container.match(/<button[^>]*>(.*?)<\/button>/gi) || []),
+            ...(container.match(/<a[^>]*>(.*?)<\/a>/gi) || []),
+            ...(container.match(/<div[^>]*swatch[^>]*>(.*?)<\/div>/gi) || []),
+            ...(container.match(/<span[^>]*color[^>]*>(.*?)<\/span>/gi) || [])
+        ];
+
+        for (const option of options) {
+            // Skip if disabled
+            if (option.match(/disabled|sold[\s-]*out|out[\s-]*of[\s-]*stock|unavailable/i)) {
+                continue;
+            }
+
+            // Extract the text content
+            const text = option.replace(/<[^>]*>/g, '').trim();
+
+            // If text might be a color name, add it
+            if (text && !text.includes('Select') && !text.includes('Choose') &&
+                (colorKeywords.some(color => text.toLowerCase().includes(color)) || text.length < 15)) {
+                colorOptions.push(text);
+            }
+
+            // Check for color in style attribute (background color)
+            const styleMatch = option.match(/style=["|'].*?background(?:-color)?:\s*(.*?)[;"|']/i);
+            if (styleMatch && styleMatch[1]) {
+                colorOptions.push(styleMatch[1].trim());
+            }
+
+            // Check for color-related classes
+            const classMatch = option.match(/class=["|'](.*?)["|']/i);
+            if (classMatch && classMatch[1]) {
+                const classes = classMatch[1].split(/\s+/);
+                for (const cls of classes) {
+                    if (colorKeywords.some(color => cls.toLowerCase().includes(color))) {
+                        // Extract color from class name
+                        const colorName = colorKeywords.find(color => cls.toLowerCase().includes(color));
+                        if (colorName && !colorOptions.includes(colorName)) {
+                            colorOptions.push(colorName);
+                        }
+                    }
+                }
+            }
+
+            // Check for data-color attribute
+            const dataColorMatch = option.match(/data-color=["|'](.*?)["|']/i);
+            if (dataColorMatch && dataColorMatch[1]) {
+                colorOptions.push(dataColorMatch[1]);
+            }
+        }
+    }
+
+    // Remove duplicates and clean up
+    return [...new Set(colorOptions)].filter(color =>
+        color &&
+        color.length < 20 &&
+        !color.includes('select') &&
+        !color.includes('choose')
+    );
 }
 
 /**
@@ -30,135 +274,102 @@ async function fetchProductPage(url) {
  * @returns {Promise<Object>} - Structured product data
  */
 async function extractProductData(html, url, apiKey) {
-  try {
-    const openai = new OpenAI({
-      apiKey: apiKey
-    });
-
-    // Simplify HTML to reduce tokens
-    const simplifyHtml = (html) => {
-      // Remove all scripts, styles, SVGs, and comments
-      let simplified = html
-        .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-        .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
-        .replace(/<svg\b[^<]*(?:(?!<\/svg>)<[^<]*)*<\/svg>/gi, '')
-        .replace(/<!--[\s\S]*?-->/g, '')
-        .replace(/\s{2,}/g, ' ');
-      
-      // Only keep a few key HTML tags that might contain product info
-      const keyElements = [];
-      
-      // Try to find the title
-      const titleMatch = simplified.match(/<title[^>]*>(.*?)<\/title>/i);
-      if (titleMatch) keyElements.push(titleMatch[0]);
-      
-      // Try to find headings which might contain the product name
-      const h1Matches = simplified.match(/<h1[^>]*>.*?<\/h1>/gi);
-      if (h1Matches) keyElements.push(...h1Matches);
-      
-      // Try to find product price
-      const priceMatches = simplified.match(/<[^>]*(?:price|cost)[^>]*>(?:(?!<\/div>)[\s\S])*<\/[^>]*>/gi);
-      if (priceMatches) keyElements.push(...priceMatches);
-      
-      // Try to find product description
-      const descMatches = simplified.match(/<[^>]*(?:description|details|features)[^>]*>(?:(?!<\/div>)[\s\S])*<\/[^>]*>/gi);
-      if (descMatches) keyElements.push(...descMatches.slice(0, 2)); // Limit to just a couple
-      
- 
-      if (keyElements.length >= 3) {
-        return keyElements.join('\n').substring(0, 3000);
-      }
-      
-      // Fallback to a short version of the HTML
-      return simplified.substring(0, 3000);
-    };
-
-    const simplifiedHtml = simplifyHtml(html);
-    
-    // Log for debugging
-    console.log("Simplified HTML length:", simplifiedHtml.length);
-    console.log("First 100 chars:", simplifiedHtml.substring(0, 100));
-
-
-    const response = await openai.chat.completions.create({
-      model: "gpt-4", 
-      messages: [
-        {
-          role: "system",
-          content: `You are a JSON-only product information extractor. 
-          You MUST ALWAYS respond with ONLY a valid JSON object and nothing else.
-          Do not include any explanation, preamble, or commentary.`
-        },
-        {
-          role: "user",
-          content: `Extract basic product info from this HTML for: ${url}
-          
-          Respond with ONLY this JSON structure:
-          {
-            "url": "${url}",
-            "title": "Product title",
-            "category": "Product category if found, otherwise best guess",
-            "attributes": {
-              "colorOptions": ["array of colors if found"],
-              "sizeOptions": ["array of sizes if found"],
-              // other attributes you can find
-            },
-            "rawPrice": 29.99 // numeric price without currency symbol
-          }
-          
-          HTML: ${simplifiedHtml}`
-        }
-      ],
-      response_format: { type: "json_object" }, 
-      max_tokens: 1000,
-      temperature: 0,
-    });
-
-    // Get the response content
-    const content = response.choices[0].message.content;
-    console.log("OpenAI response:", content.substring(0, 100) + "...");
-
-    // Parse the JSON response
     try {
-      // First try direct parsing
-      return JSON.parse(content);
-    } catch (parseError) {
-      console.error("Direct JSON parsing failed:", parseError.message);
-      
-      // Try to extract JSON from the response if there's text around it
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
+        const openai = new OpenAI({
+            apiKey: apiKey
+        });
+
+        // Process the HTML
+        const cleanedHtml = cleanHtml(html);
+        const processedHtml = extractProductInfo(cleanedHtml, url);
+
+        // Log for debugging
+        console.log("Processed HTML length:", processedHtml.length);
+
+        // Create a prompt focused on only available options
+        const response = await openai.chat.completions.create({
+            model: "gpt-4",
+            messages: [
+                {
+                    role: "system",
+                    content: `You are a product data extraction expert. Extract ONLY AVAILABLE product attributes from the HTML.
+Your output must be ONLY valid JSON without any explanations.`
+                },
+                {
+                    role: "user",
+                    content: `Extract only AVAILABLE product information from this HTML.
+
+Use this exact JSON structure:
+{
+  "url": "${url}",
+  "title": "Product title",
+  "category": "Product category (use 'Unknown' only if absolutely no category information is found)",
+  "attributes": {
+    "colorOptions": ["ONLY available color options"],
+    "sizeOptions": ["ONLY available size options"]
+    // Include other available product attributes
+  },
+  "rawPrice": 0 // Numeric price without currency symbols
+}
+
+HTML Content:
+${processedHtml}`
+                }
+            ],
+            max_tokens: 1000,
+            temperature: 0.1,
+        });
+
+        // Get the response content
+        const content = response.choices[0].message.content;
+        console.log("OpenAI response start:", content.substring(0, 100) + "...");
+
+        // Parse the JSON response
         try {
-          return JSON.parse(jsonMatch[0]);
-        } catch (matchError) {
-          console.error("JSON extraction failed:", matchError.message);
+            return JSON.parse(content);
+        } catch (parseError) {
+            console.error("Direct JSON parsing failed:", parseError.message);
+
+            // Try to extract JSON from the response if there's text around it
+            const jsonMatch = content.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                try {
+                    return JSON.parse(jsonMatch[0]);
+                } catch (matchError) {
+                    console.error("JSON extraction failed:", matchError.message);
+                }
+            }
+
+            // If all parsing fails, create a basic fallback response
+            console.error("Falling back to basic product data");
+            return {
+                url: url,
+                title: "Product Title Not Extracted",
+                category: "Unknown",
+                attributes: {
+                    colorOptions: [],
+                    sizeOptions: []
+                },
+                rawPrice: 0
+            };
         }
-      }
-      
-      // If all parsing fails, create a basic fallback response
-      console.error("Falling back to basic product data");
-      return {
-        url: url,
-        title: "Product Title Not Extracted",
-        category: "Unknown",
-        attributes: {},
-        rawPrice: 0
-      };
+    } catch (error) {
+        console.error('Error extracting product data:', error);
+        // Create a basic fallback response
+        return {
+            url: url,
+            title: "Error: " + error.message.substring(0, 30),
+            category: "Unknown",
+            attributes: {
+                colorOptions: [],
+                sizeOptions: []
+            },
+            rawPrice: 0
+        };
     }
-  } catch (error) {
-    console.error('Error extracting product data:', error);
-    // Create a basic fallback response
-    return {
-      url: url,
-      title: "Error: " + error.message.substring(0, 30),
-      category: "Error",
-      attributes: {},
-      rawPrice: 0
-    };
-  }
 }
 
 module.exports = {
-  fetchProductPage,
-  extractProductData
+    fetchProductPage,
+    extractProductData
 };
