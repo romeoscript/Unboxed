@@ -4,7 +4,7 @@ A REST API that extracts structured product data from URLs using OpenAI's GPT-4.
 
 ## Live API URL
 
-**API Endpoint**: `https://your-deployed-api-url.com/parse-product`
+**API Endpoint**: `https://unboxed-weld.vercel.app/parse-product`
 
 ## Overview
 
@@ -15,7 +15,7 @@ This API takes a product URL and OpenAI API key, fetches the HTML from the produ
 ### Request
 
 ```bash
-curl -X POST https://your-deployed-api-url.com/parse-product \
+curl -X POST https://unboxed-weld.vercel.app/parse-product \
   -H "Content-Type: application/json" \
   -d '{
     "url": "https://now-time.biz/products/issue-1-whirlpool?variant=42480670539836",
@@ -44,8 +44,8 @@ curl -X POST https://your-deployed-api-url.com/parse-product \
 
 1. Clone the repository:
    ```
-   git clone https://github.com/yourusername/product-parser-api.git
-   cd product-parser-api
+   git clone https://github.com/romeoscript/Unboxed.git
+   cd Unboxed
    ```
 
 2. Install dependencies:
@@ -53,10 +53,6 @@ curl -X POST https://your-deployed-api-url.com/parse-product \
    npm install
    ```
 
-3. Create a `.env` file from the example:
-   ```
-   cp .env.example .env
-   ```
 
 4. Run the development server:
    ```
@@ -134,6 +130,7 @@ Given the 1-2 hour time constraint, I focused on a functional MVP. With more tim
    - Support for JavaScript-rendered content with Puppeteer/Playwright
 
 2. **Reliability Improvements**
+   - Add more means for color detection in product pages
    - Add retry logic for both fetching and AI processing
    - Implement caching to avoid redundant processing of the same URLs
    - Add defensive error handling for various HTML structures
